@@ -1,0 +1,20 @@
+# Common dataset formats
+*.csv
+*.tsv
+*.json
+*.xml
+*.xls
+*.xlsx
+*.parquet
+*.feather
+*.orc
+*.avro
+
+# Compressed files (often datasets are compressed)
+*.zip
+*.gz
+*.bz2
+*.xz
+*.7z
+*.tar
+*.rar
