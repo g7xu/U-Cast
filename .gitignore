@@ -1,3 +1,5 @@
+.DS_Store
+
 # Common dataset formats
 *.csv
 *.tsv
@@ -18,3 +20,7 @@
 *.7z
 *.tar
 *.rar
+
+# data folder
+cse151b-spring2025-competition
+outputs
