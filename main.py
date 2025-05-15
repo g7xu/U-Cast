@@ -44,13 +44,14 @@ log = get_logger(__name__)
 
 # Dataset to precompute all tensors during initialization
 class ClimateDataset(Dataset):
-    def __init__(self, inputs_norm_dask, outputs_dask, output_is_normalized=True):
-        # Store dataset size
-        self.size = inputs_norm_dask.shape[0]
+    def __init__(self, inputs_norm_dask, outputs_dask, output_is_normalized=True, sequence_length: int = 1):
+        self.sequence_length = sequence_length
+        self.total_timesteps = inputs_norm_dask.shape[0]
 
         # Log once with basic information
         log.info(
-            f"Creating dataset: {self.size} samples, input shape: {inputs_norm_dask.shape}, normalized output: {output_is_normalized}"
+            f"Creating dataset: {self.total_timesteps} total time steps, input shape per time step: {inputs_norm_dask.shape[1:]}, "
+            f"sequence_length: {self.sequence_length}, normalized output: {output_is_normalized}"
         )
 
         # Precompute all tensors in one go
@@ -66,10 +67,22 @@ class ClimateDataset(Dataset):
             raise ValueError("NaN values detected in dataset tensors")
 
     def __len__(self):
-        return self.size
+        if self.sequence_length == 1:
+            return self.total_timesteps
+        else:
+            # Number of possible start points for a sequence
+            return self.total_timesteps - self.sequence_length + 1
 
     def __getitem__(self, idx):
-        return self.input_tensors[idx], self.output_tensors[idx]
+        if self.sequence_length == 1:
+            # Return a single time step (for CNN-like models)
+            return self.input_tensors[idx], self.output_tensors[idx]
+        else:
+            # Return a sequence of inputs and the target output at the end of the sequence
+            input_sequence = self.input_tensors[idx : idx + self.sequence_length]
+            # Target is the output corresponding to the last time step of the input sequence
+            target = self.output_tensors[idx + self.sequence_length - 1]
+            return input_sequence, target
 
 
 def _load_process_ssp_data(ds, ssp, input_variables, output_variables, member_id, spatial_template):
@@ -138,6 +151,7 @@ class ClimateEmulationDataModule(LightningDataModule):
         train_ssps: list,
         test_ssp: str,
         target_member_id: int,
+        model_cfg: DictConfig, # Added model_cfg to access sequence_length
         test_months: int = 360,
         batch_size: int = 32,
         eval_batch_size: int = None,
@@ -145,8 +159,14 @@ class ClimateEmulationDataModule(LightningDataModule):
         seed: int = 42,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        # Save most hyperparameters, model_cfg is used internally to set sequence_length
+        # and isn't strictly a hyperparameter of the DataModule itself in the same way.
+        self.save_hyperparameters(ignore=["model_cfg"])
         self.hparams.path = to_absolute_path(path)
+        
+        # Determine sequence_length from model_cfg, defaulting to 1
+        self.sequence_length = getattr(model_cfg, 'sequence_length', 1)
+        log.info(f"ClimateEmulationDataModule initialized with sequence_length: {self.sequence_length}")
         self.normalizer = Normalizer()
 
         # Set evaluation batch size to training batch size if not specified
@@ -245,9 +265,24 @@ class ClimateEmulationDataModule(LightningDataModule):
             test_output_raw_dask = sliced_test_output_raw_dask  # Keep unnormed for evaluation
 
         # Create datasets
-        self.train_dataset = ClimateDataset(train_input_norm_dask, train_output_norm_dask, output_is_normalized=True)
-        self.val_dataset = ClimateDataset(val_input_norm_dask, val_output_norm_dask, output_is_normalized=True)
-        self.test_dataset = ClimateDataset(test_input_norm_dask, test_output_raw_dask, output_is_normalized=False)
+        self.train_dataset = ClimateDataset(
+            train_input_norm_dask,
+            train_output_norm_dask,
+            output_is_normalized=True,
+            sequence_length=self.sequence_length
+        )
+        self.val_dataset = ClimateDataset(
+            val_input_norm_dask,
+            val_output_norm_dask,
+            output_is_normalized=True,
+            sequence_length=self.sequence_length
+        )
+        self.test_dataset = ClimateDataset(
+            test_input_norm_dask,
+            test_output_raw_dask,
+            output_is_normalized=False,
+            sequence_length=self.sequence_length
+        )
 
         # Log dataset sizes in a single message
         log.info(
@@ -525,7 +560,11 @@ def main(cfg: DictConfig):
     pl.seed_everything(cfg.seed, workers=True)
 
     # Create data module with parameters from configs
-    datamodule = ClimateEmulationDataModule(seed=cfg.seed, **cfg.data)
+    datamodule = ClimateEmulationDataModule(
+        model_cfg=cfg.model, # Pass the model sub-config
+        seed=cfg.seed,
+        **cfg.data
+    )
     model = get_model(cfg)
 
     # Create lightning module
