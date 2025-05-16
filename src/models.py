@@ -181,9 +181,18 @@ class ClimateConvLSTM(nn.Module):
         )
         self.bn2 = nn.BatchNorm2d(num_features=convlstm_hidden_dims[1])
 
+        # --- ConvLSTM Block 3 ---
+        self.convlstm_cell3 = CustomConvLSTMCell(
+            input_dim=convlstm_hidden_dims[1],
+            hidden_dim=convlstm_hidden_dims[2],
+            kernel_size=tuple(convlstm_kernel_sizes[2]),
+            bias=convlstm_bias
+        )
+        self.bn3 = nn.BatchNorm2d(num_features=convlstm_hidden_dims[2])
+
         # --- Output Prediction Head ---
         self.output_conv = nn.Conv2d(
-            in_channels=convlstm_hidden_dims[1],
+            in_channels=convlstm_hidden_dims[2], # Use the last hidden dim (index 2 for 3 layers)
             out_channels=num_output_variables,
             kernel_size=(1, 1),
             padding=0
@@ -196,6 +205,8 @@ class ClimateConvLSTM(nn.Module):
         # Initialize hidden states for each layer
         h1, c1 = self.convlstm_cell1.init_hidden(batch_size, (H, W), x_sequence.device)
         h2, c2 = self.convlstm_cell2.init_hidden(batch_size, (H, W), x_sequence.device)
+        h3, c3 = self.convlstm_cell3.init_hidden(batch_size, (H, W), x_sequence.device)
+
 
         # Loop over sequence length
         for t in range(seq_len):
@@ -206,7 +217,10 @@ class ClimateConvLSTM(nn.Module):
             h2, c2 = self.convlstm_cell2(h1_bn, (h2, c2))
             h2_bn = self.bn2(h2)
 
-        last_hidden_state_final = h2_bn
+            h3, c3 = self.convlstm_cell3(h2_bn, (h3, c3))
+            h3_bn = self.bn3(h3)
+
+        last_hidden_state_final = h3_bn # Output of the last layer
         prediction = self.output_conv(last_hidden_state_final)
 
         return prediction

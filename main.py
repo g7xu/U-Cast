@@ -581,6 +581,11 @@ def main(cfg: DictConfig):
     trainer.fit(lightning_module, datamodule=datamodule, ckpt_path=cfg.ckpt_path)
     log.info("Training finished.")
 
+    # --- Save the final model checkpoint ---
+    checkpoint_path = "trained_model_30epochs.ckpt"
+    trainer.save_checkpoint(checkpoint_path)
+    log.info(f"Model checkpoint saved to: {os.path.join(os.getcwd(), checkpoint_path)}")
+
     # Test model
     # IMPORTANT: Please note that the test metrics will be bad because the test targets have been corrupted on the public Kaggle dataset.
     # The purpose of testing below is to generate the Kaggle submission file based on your model's predictions.

@@ -9,6 +9,6 @@ num_output_variables: 2 # For 'tas' and 'pr'
 sequence_length: 6    # Example sequence length, can be tuned
 
 # Parameters for CustomConvLSTMCell layers
-convlstm_hidden_dims: [64, 128] # Hidden dimensions for the two ConvLSTM layers
-convlstm_kernel_sizes: [[3,3], [3,3]] # Kernel sizes for the two ConvLSTM layers
+convlstm_hidden_dims: [64, 128, 256] # Hidden dimensions for the three ConvLSTM layers
+convlstm_kernel_sizes: [[3,3], [3,3], [3,3]] # Kernel sizes for the three ConvLSTM layers
 convlstm_bias: True
