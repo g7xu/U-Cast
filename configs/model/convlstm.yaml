@@ -1,0 +1,14 @@
+# @package _global_.model
+# Configuration for the ClimateConvLSTM model
+
+type: "convlstm" # Model type identifier for get_model
+
+# Parameters for ClimateConvLSTM.__init__
+input_channels: 5      # Using 5 base forcing variables
+num_output_variables: 2 # For 'tas' and 'pr'
+sequence_length: 6    # Example sequence length, can be tuned
+
+# Parameters for CustomConvLSTMCell layers
+convlstm_hidden_dims: [64, 128, 256] # Hidden dimensions for the three ConvLSTM layers
+convlstm_kernel_sizes: [[3,3], [3,3], [3,3]] # Kernel sizes for the three ConvLSTM layers
+convlstm_bias: True

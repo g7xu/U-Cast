@@ -1,14 +1,33 @@
 import torch.nn as nn
+import torch
 from omegaconf import DictConfig
 
 
 def get_model(cfg: DictConfig):
     # Create model based on configuration
     model_kwargs = {k: v for k, v in cfg.model.items() if k != "type"}
-    model_kwargs["n_input_channels"] = len(cfg.data.input_vars)
-    model_kwargs["n_output_channels"] = len(cfg.data.output_vars)
+
     if cfg.model.type == "simple_cnn":
+        # Specific kwargs for SimpleCNN
+        model_kwargs["n_input_channels"] = len(cfg.data.input_vars)
+        model_kwargs["n_output_channels"] = len(cfg.data.output_vars)
         model = SimpleCNN(**model_kwargs)
+    elif cfg.model.type == "convlstm":
+        # Ensure 'num_output_variables' is set, defaulting from cfg.data if not present in model config
+        # as per the ClimateConvLSTM class __init__ and the plan's example.
+        if "num_output_variables" not in model_kwargs:
+            model_kwargs["num_output_variables"] = len(cfg.data.output_vars)
+
+        # Validate required parameters for ClimateConvLSTM are present in the configuration.
+        # These parameters are defined in `configs/model/convlstm.yaml` and loaded into model_kwargs.
+        # Explicit checks are good practice, as shown in the plan's `get_model` example.
+        required_params = ["input_channels", "sequence_length", "convlstm_hidden_dims", "convlstm_kernel_sizes"]
+        for param in required_params:
+            if param not in model_kwargs:
+                raise ValueError(f"ClimateConvLSTM requires '{param}' in its model configuration.")
+        
+        # convlstm_bias has a default in the ClimateConvLSTM class constructor.
+        model = ClimateConvLSTM(**model_kwargs)
     else:
         raise ValueError(f"Unknown model type: {cfg.model.type}")
     return model
@@ -97,3 +116,111 @@ class SimpleCNN(nn.Module):
         x = self.final(x)
 
         return x
+
+class CustomConvLSTMCell(nn.Module):
+    def __init__(self, input_dim, hidden_dim, kernel_size, bias=True):
+        super(CustomConvLSTMCell, self).__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.kernel_size = kernel_size
+        # Calculate padding for 'same' output
+        self.padding = (kernel_size[0] // 2, kernel_size[1] // 2)
+        self.bias = bias
+
+        self.conv = nn.Conv2d(in_channels=self.input_dim + self.hidden_dim,
+                              out_channels=4 * self.hidden_dim, # For i, f, o, g gates
+                              kernel_size=self.kernel_size,
+                              padding=self.padding,
+                              bias=self.bias)
+
+    def forward(self, input_tensor, cur_state):
+        h_cur, c_cur = cur_state
+        combined = torch.cat([input_tensor, h_cur], dim=1)
+        combined_conv = self.conv(combined)
+        
+        # Split into gates: input, forget, output, cell gate
+        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
+        
+        i = torch.sigmoid(cc_i)
+        f = torch.sigmoid(cc_f)
+        o = torch.sigmoid(cc_o)
+        g = torch.tanh(cc_g)
+
+        c_next = f * c_cur + i * g
+        h_next = o * torch.tanh(c_next)
+        
+        return h_next, c_next
+
+    def init_hidden(self, batch_size, image_size, device):
+        height, width = image_size
+        return (torch.zeros(batch_size, self.hidden_dim, height, width, device=device),
+                torch.zeros(batch_size, self.hidden_dim, height, width, device=device))
+
+class ClimateConvLSTM(nn.Module):
+    def __init__(self, input_channels, num_output_variables, sequence_length,
+                 convlstm_hidden_dims, convlstm_kernel_sizes, convlstm_bias=True):
+        super(ClimateConvLSTM, self).__init__()
+        self.sequence_length = sequence_length
+        self.input_channels = input_channels
+
+        # --- ConvLSTM Block 1 ---
+        self.convlstm_cell1 = CustomConvLSTMCell(
+            input_dim=self.input_channels,
+            hidden_dim=convlstm_hidden_dims[0],
+            kernel_size=tuple(convlstm_kernel_sizes[0]),
+            bias=convlstm_bias
+        )
+        self.bn1 = nn.BatchNorm2d(num_features=convlstm_hidden_dims[0])
+
+        # --- ConvLSTM Block 2 ---
+        self.convlstm_cell2 = CustomConvLSTMCell(
+            input_dim=convlstm_hidden_dims[0],
+            hidden_dim=convlstm_hidden_dims[1],
+            kernel_size=tuple(convlstm_kernel_sizes[1]),
+            bias=convlstm_bias
+        )
+        self.bn2 = nn.BatchNorm2d(num_features=convlstm_hidden_dims[1])
+
+        # --- ConvLSTM Block 3 ---
+        self.convlstm_cell3 = CustomConvLSTMCell(
+            input_dim=convlstm_hidden_dims[1],
+            hidden_dim=convlstm_hidden_dims[2],
+            kernel_size=tuple(convlstm_kernel_sizes[2]),
+            bias=convlstm_bias
+        )
+        self.bn3 = nn.BatchNorm2d(num_features=convlstm_hidden_dims[2])
+
+        # --- Output Prediction Head ---
+        self.output_conv = nn.Conv2d(
+            in_channels=convlstm_hidden_dims[2], # Use the last hidden dim (index 2 for 3 layers)
+            out_channels=num_output_variables,
+            kernel_size=(1, 1),
+            padding=0
+        )
+
+    def forward(self, x_sequence):
+        # x_sequence shape: (batch_size, sequence_length, C_in, height, width)
+        batch_size, seq_len, _, H, W = x_sequence.shape
+
+        # Initialize hidden states for each layer
+        h1, c1 = self.convlstm_cell1.init_hidden(batch_size, (H, W), x_sequence.device)
+        h2, c2 = self.convlstm_cell2.init_hidden(batch_size, (H, W), x_sequence.device)
+        h3, c3 = self.convlstm_cell3.init_hidden(batch_size, (H, W), x_sequence.device)
+
+
+        # Loop over sequence length
+        for t in range(seq_len):
+            x_t = x_sequence[:, t, :, :, :]
+            h1, c1 = self.convlstm_cell1(x_t, (h1, c1))
+            h1_bn = self.bn1(h1)
+
+            h2, c2 = self.convlstm_cell2(h1_bn, (h2, c2))
+            h2_bn = self.bn2(h2)
+
+            h3, c3 = self.convlstm_cell3(h2_bn, (h3, c3))
+            h3_bn = self.bn3(h3)
+
+        last_hidden_state_final = h3_bn # Output of the last layer
+        prediction = self.output_conv(last_hidden_state_final)
+
+        return prediction

@@ -1,6 +1,6 @@
 # @package _global_.data
 
-path: cse151b-spring2025-competition  # Path to the processed Zarr dataset
+path: processed_data_cse151b_v2_corrupted_ssp245.zarr  # Path to the processed Zarr dataset
 
 input_vars: 
   - "CO2"
