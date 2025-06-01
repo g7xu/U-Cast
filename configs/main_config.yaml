@@ -2,7 +2,8 @@
 
 defaults:
   - data: default
-  - model: convlstm
+  - model: enhanced_climate_unet
+  # - model: simple_cnn
   - training: default
   - trainer: default
   - _self_
@@ -14,7 +15,7 @@ seed: 42
 use_wandb: true
 wandb_project: "Deep-sea-kucumber-cse-151b-competition"
 wandb_entity: "guoxuan-xu8-uc-san-diego"
-run_name: null
+run_name: "demo_enhanced_climate_unnet"
 
 # Path to a checkpoint to load. If set, will load this checkpoint and resume training (evaluation)
 ckpt_path: null

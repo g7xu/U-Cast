@@ -561,7 +561,7 @@ def main(cfg: DictConfig):
 
     # Create data module with parameters from configs
     datamodule = ClimateEmulationDataModule(
-        model_cfg=cfg.model, # Pass the model sub-config
+        model_cfg=cfg._group_, # Pass the model sub-config from _group_
         seed=cfg.seed,
         **cfg.data
     )

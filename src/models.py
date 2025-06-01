@@ -1,3 +1,4 @@
+import torch.nn.functional as F
 import torch.nn as nn
 import torch
 from omegaconf import DictConfig
@@ -5,13 +6,26 @@ from omegaconf import DictConfig
 
 def get_model(cfg: DictConfig):
     # Create model based on configuration
-    model_kwargs = {k: v for k, v in cfg.model.items() if k != "type"}
+    # model_kwargs = {k: v for k, v in cfg.model.items() if k != "type"}
+    model_kwargs = {k: v for k, v in cfg._group_.items() if k != "type"}
 
-    if cfg.model.type == "simple_cnn":
+    if cfg._group_.type == "simple_cnn":
+    # if cfg.model.type == "simple_cnn":
         # Specific kwargs for SimpleCNN
         model_kwargs["n_input_channels"] = len(cfg.data.input_vars)
         model_kwargs["n_output_channels"] = len(cfg.data.output_vars)
         model = SimpleCNN(**model_kwargs)
+    elif cfg._group_.type == "enhanced_climate_unet":
+    # elif cfg.model.type == "enhanced_climate_unet":
+        # Specific kwargs for EnhancedClimateUNet
+        model_kwargs["n_input_channels"] = len(cfg.data.input_vars)
+        model_kwargs["n_output_channels"] = len(cfg.data.output_vars)
+        # Optional parameters with defaults in the model class
+        optional_params = ["kernel_size", "init_dim", "depth", "dropout_rate"]
+        for param in optional_params:
+            if param in cfg._group_:
+                model_kwargs[param] = cfg._group_[param]
+        model = EnhancedClimateUNet(**model_kwargs)
     elif cfg.model.type == "convlstm":
         # Ensure 'num_output_variables' is set, defaulting from cfg.data if not present in model config
         # as per the ClimateConvLSTM class __init__ and the plan's example.
@@ -25,7 +39,7 @@ def get_model(cfg: DictConfig):
         for param in required_params:
             if param not in model_kwargs:
                 raise ValueError(f"ClimateConvLSTM requires '{param}' in its model configuration.")
-        
+
         # convlstm_bias has a default in the ClimateConvLSTM class constructor.
         model = ClimateConvLSTM(**model_kwargs)
     else:
@@ -224,3 +238,135 @@ class ClimateConvLSTM(nn.Module):
         prediction = self.output_conv(last_hidden_state_final)
 
         return prediction
+
+class CoordConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, bias=False):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(in_channels + 2, out_channels, kernel_size,
+                              padding=padding, bias=bias)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        ys = torch.linspace(-1, 1, H, device=x.device).view(1, 1, H, 1).expand(B, 1, H, W)
+        xs = torch.linspace(-1, 1, W, device=x.device).view(1, 1, 1, W).expand(B, 1, H, W)
+        coords = torch.cat([ys, xs], dim=1)
+        return self.conv(torch.cat([x, coords], dim=1))
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=8):
+        super().__init__()
+        self.fc1 = nn.Conv2d(channels, channels // reduction, 1)
+        self.fc2 = nn.Conv2d(channels // reduction, channels, 1)
+
+    def forward(self, x):
+        s = F.adaptive_avg_pool2d(x, 1)
+        s = F.relu(self.fc1(s), inplace=True)
+        s = torch.sigmoid(self.fc2(s))
+        return x * s
+
+
+class ResidualSEBlock(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size: int = 3,
+        stride: int = 1,
+        dilation: int = 1,
+        groups: int = 8,
+    ):
+        super().__init__()
+        padding = dilation * (kernel_size // 2)
+
+        groups = max(1, min(groups, out_channels // 2))
+
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size,
+            stride=stride, padding=padding,
+            dilation=dilation, bias=False
+        )
+        self.gn1   = nn.GroupNorm(groups, out_channels)
+
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size,
+            padding=padding, dilation=dilation, bias=False
+        )
+        self.gn2 = nn.GroupNorm(groups, out_channels)
+
+        if stride != 1 or in_channels != out_channels:
+            self.skip = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride, bias=False),
+                nn.GroupNorm(groups, out_channels),
+            )
+        else:
+            self.skip = nn.Identity()
+
+        self.se = SEBlock(out_channels)
+        self.act = nn.GELU()
+
+    def forward(self, x):
+        identity = self.skip(x)
+        out = self.act(self.gn1(self.conv1(x)))
+        out = self.gn2(self.conv2(out))
+        out = self.se(out)
+        return self.act(out + identity)
+
+class EnhancedClimateUNet(nn.Module):
+    def __init__(
+        self,
+        n_input_channels: int,
+        n_output_channels: int,
+        kernel_size: int    = 3,
+        init_dim: int       = 64,
+        depth: int          = 4,
+        dropout_rate: float = 0.1,
+    ):
+        super().__init__()
+
+        self.enc_blocks, self.down_convs = nn.ModuleList(), nn.ModuleList()
+        prev_ch = n_input_channels
+        for i in range(depth):
+            out_ch = init_dim * (2 ** i)
+            blk = CoordConv2d if i == 0 else ResidualSEBlock
+            self.enc_blocks.append(blk(prev_ch, out_ch, kernel_size=kernel_size))
+            self.down_convs.append(nn.Conv2d(out_ch, out_ch, 2, 2))
+            prev_ch = out_ch
+
+        bottleneck_ch = prev_ch * 2
+        self.bottleneck = nn.Sequential(
+            ResidualSEBlock(prev_ch,       bottleneck_ch, kernel_size, dilation=1),
+            ResidualSEBlock(bottleneck_ch, bottleneck_ch, kernel_size, dilation=2),
+            ResidualSEBlock(bottleneck_ch, bottleneck_ch, kernel_size, dilation=4),
+        )
+        self.dropout = nn.Dropout2d(dropout_rate)
+        prev_ch = bottleneck_ch
+
+        self.up_convs, self.dec_blocks = nn.ModuleList(), nn.ModuleList()
+        for i in reversed(range(depth)):
+            out_ch = init_dim * (2 ** i)
+            self.up_convs.append(nn.ConvTranspose2d(prev_ch, out_ch, 2, 2))
+            self.dec_blocks.append(
+                ResidualSEBlock(out_ch * 2, out_ch, kernel_size=kernel_size)
+            )
+            prev_ch = out_ch
+
+        self.final_conv = nn.Conv2d(init_dim, n_output_channels, 1)
+
+    def forward(self, x):
+        skips = []
+        for enc, down in zip(self.enc_blocks, self.down_convs):
+            x = enc(x)
+            skips.append(x)
+            x = down(x)
+
+        x = self.dropout(self.bottleneck(x))
+
+        for up, dec, skip in zip(self.up_convs, self.dec_blocks, reversed(skips)):
+            x = up(x)
+            if x.shape[-2:] != skip.shape[-2:]:
+                x = F.interpolate(x, skip.shape[-2:], mode='bilinear', align_corners=False)
+            x = dec(torch.cat([x, skip], 1))
+
+        return self.final_conv(x)
+
