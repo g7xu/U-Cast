@@ -6,7 +6,7 @@ type: enhanced_climate_unet
 # Model hyperparameters (refer to the EnhancedClimateUNet class definition for details)
 # These values will override the defaults in the model class if specified here.
 # n_input_channels and n_output_channels are automatically set by get_model based on data config.
-kernel_size: 3
+kernel_size: 5
 init_dim: 64
 depth: 4
 dropout_rate: 0.04219094845272814
