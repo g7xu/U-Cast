@@ -1,4 +1,4 @@
-# @package _global_.model
+# @package _group_
 
 # Model type identifier
 type: simple_cnn

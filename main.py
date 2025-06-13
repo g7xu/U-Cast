@@ -103,43 +103,105 @@ def _load_process_ssp_data(ds, ssp, input_variables, output_variables, member_id
                - input_dask_array: Stacked dask array of inputs (time, channels, y, x).
                - output_dask_array: Stacked dask array of outputs (time, channels, y, x).
     """
-    ssp_input_dasks = []
-    for var in input_variables:
-        da_var = ds[var].sel(ssp=ssp)
-        # Rename spatial dims if needed
-        if "latitude" in da_var.dims:
-            da_var = da_var.rename({"latitude": "y", "longitude": "x"})
-        # Select member if applicable
-        if "member_id" in da_var.dims:
-            da_var = da_var.sel(member_id=member_id)
+    # Get all available member IDs from the dataset
+    all_member_ids = ds.member_id.values
+    log.info(f"Processing data for SSP: {ssp} across all member_ids: {all_member_ids}")
 
-        # Process based on dimensions
-        if set(da_var.dims) == {"time"}:  # Global variable, broadcast to spatial dims:
-            # Broadcast like template, then transpose to ensure ('time', 'y', 'x')
-            da_var_expanded = da_var.broadcast_like(spatial_template).transpose("time", "y", "x")
-            ssp_input_dasks.append(da_var_expanded.data)
-        elif set(da_var.dims) == {"time", "y", "x"}:  # Spatially resolved
-            ssp_input_dasks.append(da_var.data)
-        else:
-            raise ValueError(f"Unexpected dimensions for variable {var} in SSP {ssp}: {da_var.dims}")
+    all_members_input_dasks = []
+    all_members_output_dasks = []
 
-    # Stack inputs along channel dimension -> dask array (time, channels, y, x)
-    stacked_input_dask = da.stack(ssp_input_dasks, axis=1)
+    # Loop through each member ID and process its data
+    for current_member_id in all_member_ids:
+        log.info(f"  Processing member_id: {current_member_id}")
 
-    # Prepare output dask arrays for each output variable
-    output_dasks = []
-    for var in output_variables:
-        da_output = ds[var].sel(ssp=ssp, member_id=member_id)
-        # Ensure output also uses y, x if necessary
-        if "latitude" in da_output.dims:
-            da_output = da_output.rename({"latitude": "y", "longitude": "x"})
+        current_member_input_dasks = []
+        for var in input_variables:
+            da_var = ds[var].sel(ssp=ssp)
+            # Select member if applicable (some variables might not have a member_id dimension)
+            if "member_id" in da_var.dims:
+                da_var = da_var.sel(member_id=current_member_id)
 
-        # Add time, y, x dimensions as a dask array
-        output_dasks.append(da_output.data)
+            # Rename spatial dims if needed
+            if "latitude" in da_var.dims:
+                da_var = da_var.rename({"latitude": "y", "longitude": "x"})
 
-    # Stack outputs along channel dimension -> dask array (time, channels, y, x)
-    stacked_output_dask = da.stack(output_dasks, axis=1)
-    return stacked_input_dask, stacked_output_dask
+            # Process based on dimensions
+            if set(da_var.dims) == {"time"}:  # Global variable, broadcast to spatial dims:
+                # Broadcast like template, then transpose to ensure ('time', 'y', 'x')
+                da_var_expanded = da_var.broadcast_like(spatial_template).transpose("time", "y", "x")
+                current_member_input_dasks.append(da_var_expanded.data)
+            elif set(da_var.dims) == {"time", "y", "x"}:  # Spatially resolved
+                current_member_input_dasks.append(da_var.data)
+            else:
+                raise ValueError(f"Unexpected dimensions for variable {var} in SSP {ssp}: {da_var.dims}")
+
+        # Stack inputs along channel dimension for the current member
+        stacked_input_dask = da.stack(current_member_input_dasks, axis=1)
+        all_members_input_dasks.append(stacked_input_dask)
+
+        # Prepare output dask arrays for each output variable for the current member
+        current_member_output_dasks = []
+        for var in output_variables:
+            # Output variables are assumed to have member_id dimension based on original code
+            da_output = ds[var].sel(ssp=ssp, member_id=current_member_id)
+            # Ensure output also uses y, x if necessary
+            if "latitude" in da_output.dims:
+                da_output = da_output.rename({"latitude": "y", "longitude": "x"})
+
+            # Add time, y, x dimensions as a dask array
+            current_member_output_dasks.append(da_output.data)
+
+        # Stack outputs along channel dimension for the current member
+        stacked_output_dask = da.stack(current_member_output_dasks, axis=1)
+        all_members_output_dasks.append(stacked_output_dask)
+
+    # Concatenate data from all members along the time dimension (axis=0)
+    final_input_dask = da.concatenate(all_members_input_dasks, axis=0)
+    final_output_dask = da.concatenate(all_members_output_dasks, axis=0)
+
+    log.info(f"Finished processing SSP: {ssp}. Combined input shape: {final_input_dask.shape}, combined output shape: {final_output_dask.shape}")
+
+    return final_input_dask, final_output_dask
+
+
+
+    # ssp_input_dasks = []
+    # for var in input_variables:
+    #     da_var = ds[var].sel(ssp=ssp)
+    #     # Rename spatial dims if needed
+    #     if "latitude" in da_var.dims:
+    #         da_var = da_var.rename({"latitude": "y", "longitude": "x"})
+    #     # Select member if applicable
+    #     if "member_id" in da_var.dims:
+    #         da_var = da_var.sel(member_id=member_id)
+
+    #     # Process based on dimensions
+    #     if set(da_var.dims) == {"time"}:  # Global variable, broadcast to spatial dims:
+    #         # Broadcast like template, then transpose to ensure ('time', 'y', 'x')
+    #         da_var_expanded = da_var.broadcast_like(spatial_template).transpose("time", "y", "x")
+    #         ssp_input_dasks.append(da_var_expanded.data)
+    #     elif set(da_var.dims) == {"time", "y", "x"}:  # Spatially resolved
+    #         ssp_input_dasks.append(da_var.data)
+    #     else:
+    #         raise ValueError(f"Unexpected dimensions for variable {var} in SSP {ssp}: {da_var.dims}")
+
+    # # Stack inputs along channel dimension -> dask array (time, channels, y, x)
+    # stacked_input_dask = da.stack(ssp_input_dasks, axis=1)
+
+    # # Prepare output dask arrays for each output variable
+    # output_dasks = []
+    # for var in output_variables:
+    #     da_output = ds[var].sel(ssp=ssp, member_id=member_id)
+    #     # Ensure output also uses y, x if necessary
+    #     if "latitude" in da_output.dims:
+    #         da_output = da_output.rename({"latitude": "y", "longitude": "x"})
+
+    #     # Add time, y, x dimensions as a dask array
+    #     output_dasks.append(da_output.data)
+
+    # # Stack outputs along channel dimension -> dask array (time, channels, y, x)
+    # stacked_output_dask = da.stack(output_dasks, axis=1)
+    # return stacked_input_dask, stacked_output_dask
 
 
 class ClimateEmulationDataModule(LightningDataModule):
@@ -561,7 +623,7 @@ def main(cfg: DictConfig):
 
     # Create data module with parameters from configs
     datamodule = ClimateEmulationDataModule(
-        model_cfg=cfg.model, # Pass the model sub-config
+        model_cfg=cfg._group_, # Pass the model sub-config from _group_
         seed=cfg.seed,
         **cfg.data
     )
