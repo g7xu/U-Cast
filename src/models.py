@@ -49,7 +49,6 @@ def get_model(cfg: DictConfig):
 
 # --- Model Architectures ---
 
-
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1):
         super().__init__()
@@ -81,7 +80,7 @@ class ResidualBlock(nn.Module):
 
         return out
 
-
+# --- Simple CNN Model ---
 class SimpleCNN(nn.Module):
     def __init__(
         self,
@@ -131,6 +130,7 @@ class SimpleCNN(nn.Module):
 
         return x
 
+# --- ConvLSTM Model ---
 class CustomConvLSTMCell(nn.Module):
     def __init__(self, input_dim, hidden_dim, kernel_size, bias=True):
         super(CustomConvLSTMCell, self).__init__()
@@ -312,6 +312,7 @@ class ResidualSEBlock(nn.Module):
         out = self.se(out)
         return self.act(out + identity)
 
+# --- Enhanced Climate U-Net ---
 class EnhancedClimateUNet(nn.Module):
     def __init__(
         self,
