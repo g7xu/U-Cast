@@ -5,7 +5,7 @@ type: "convlstm" # Model type identifier for get_model
 
 # Parameters for ClimateConvLSTM.__init__
 input_channels: 5      # Using 5 base forcing variables
-num_output_variables: 
+num_output_variables: 2
 sequence_length: 6
 
 # Parameters for CustomConvLSTMCell layers
