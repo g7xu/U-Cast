@@ -1,56 +1,55 @@
 # U-Cast
 
 ## 1. Intro
+This project focuses on climate emulation, a machine learning approach to predict future climate patterns. It addresses the computational expense of traditional physics-based climate models by developing alternative models that can maintain prediction accuracy. The task is significant for generating actionable climate predictions and understanding Earth's future climate under various emissions scenarios.
 
-*   **Context of the Project:** Briefly introduce the problem domain (climate data prediction) and the significance of the task.
-*   **Competition Details:**
-    *   What is the competition? (Mention the name and platform, e.g., Kaggle CSE 151B Spring 2025 Competition).
-    *   What is the specific machine learning task? (e.g., predicting future climate variables based on historical data).
-*   **Goal:** State the primary objective of the project (e.g., achieve the best possible prediction accuracy on the competition metric).
-
-
+## Competition Details
+This is also a competition that was being held on Kaggle named CSE 151B Competition Spring 2025 - Climate Emulation on Kaggle.
+*   **Specific Machine Learning Task:** Develop models to predict future climate variables (surface air temperature `tas` and precipitation rate `pr`) based on historical data and input forcings (`CO2`, `CH4`, `SO2`, `BC`, `rsdt`) under new Shared Socioeconomic Pathway (SSP) scenarios.
+*   **Goal:** The primary objective is to develop accurate climate emulation models and achieve the best possible prediction accuracy on the competition metrics (Monthly Area-Weighted RMSE, Decadal Mean Area-Weighted RMSE, and Decadal Standard Deviation Area-Weighted MAE).
 
 ## 3. Project Setup and Installation
 
-*   **Prerequisites:** List any necessary software or dependencies (e.g., Python, specific libraries).
+*   **Prerequisites:** download all the dependencies in the requirement.txt file
 *   **Installation:** Provide clear instructions on how to set up the project environment. This typically involves cloning the repository and installing dependencies using `requirements.txt` or `pyproject.toml`.
     ```bash
     git clone <repository_url>
-    cd climate-data-prediction-cse151b
+    cd U-cast
     pip install -r requirements.txt
     # or using poetry
     # poetry install
     ```
-
 ## 4. Data
 
-*   **Data Source:** Briefly describe where the data comes from (e.g., provided by the competition).
-*   **Data Description:** Explain the dataset, including the types of data, features, and target variables. Mention the size and format of the data.
-*   **Data Processing:** Detail the steps taken to preprocess the data, such as cleaning, normalization, feature engineering, and splitting the data.
+*   **Data Source:** The data is provided by the CSE 151B Competition on Kaggle, originating from CMIP6 climate model simulations under different Shared Socioeconomic Pathway (SSP) scenarios.
+*   **Data Description:** The dataset contains monthly climate variables (precipitation and temperature) and input variables (forcings) like CO2, SO2, CH4, BC, and rsdt. The data is coarsened to a (48, 72) lat-lon grid and includes a time dimension (monthly data) and a member ID dimension (3-member ensemble for each scenario). Training data is from SSP126, SSP370, and SSP585 scenarios. Validation data is the last 10 years of SSP370, and testing data is from SSP245. The dataset is stored in Zarr format.
+*   **Data Processing:** The provided starter code in `main.py` includes preprocessing steps such as Z-score normalization of input and output variables and broadcasting of global input variables to match spatial dimensions. These steps can be modified to suit different model architectures and requirements.
 
 ## 5. Experiments and Model Development
 
-*   **Overview of Models Tried:** List and briefly describe the different models or architectures you experimented with (e.g., Simple CNN, ConvLSTM, Enhanced Climate UNet).
-*   **Experiment Results:** For each model, present the key results, including:
-    *   Accuracy or relevant evaluation metrics (mention the metric used, e.g., RMSE, MAE).
-    *   Key parameters used for training.
-    *   Mention any significant findings or challenges encountered during experimentation.
+*   **Overview of Models Tried:** We experimented with several model architectures, including a Simple CNN baseline, a ConvLSTM network to capture temporal dependencies, Vision Transformers (ViTs), and an Enhanced Climate UNet.
+*   **Experiment Results:**
+    *   **Evaluation Metrics:** We primarily used the competition's area-weighted metrics (Monthly Area-Weighted RMSE, Decadal Mean Area-Weighted RMSE, and Decadal Standard Deviation Area-Weighted MAE) for final evaluation on Kaggle. During development, we also monitored training speed per epoch, convergence rate based on loss curves, and signs of overfitting by comparing validation loss against training loss.
+    *   **Training Speed:** Simple CNN (~1 min/epoch), ConvLSTM (~2.5 min/epoch), U-Net (~3 min/epoch).
+    *   **Convergence and Overfitting:** We observed that the Adam optimizer helped achieve faster convergence compared to the initial optimizer. We monitored validation loss to prevent overfitting, especially given the limited dataset size.
+    *   **Hyperparameter Tuning:** Key hyperparameters tuned included learning rate (exploring 0.0001, 0.00005, 0.00003), kernel size (3, 5, 7), network depth (2, 4, 6), and dropout rate (0.01 to 0.1).
+    *   **Kaggle Leaderboard:** Our final U-Net model significantly outperformed the baselines and ViT on both the public and private Kaggle leaderboards (see Section 8 for detailed results).
 
 ## 6. Final Model
 
-*   **Final Model Selection:** Explain why the chosen model was selected as the final solution.
-*   **Model Architecture:** Provide a more detailed description of the final model's architecture.
-*   **Training Details:** Describe the training process for the final model, including hyperparameters, optimizer, loss function, and number of epochs.
-*   **Final Parameters:** Specify the final parameters or configuration used for the best performing model.
-
-## 7. How to Run
-
-*   Provide instructions on how to run the main scripts for training, evaluation, or prediction.
-    ```bash
-    # Example command to run training
-    python main.py --config configs/training/default.yaml
-    ```
-*   Explain any necessary command-line arguments or configuration files.
+*   **Final Model Selection:** The Enhanced Climate UNet was selected as the final model due to its strong performance on the validation set and Kaggle leaderboard, faster training convergence, and better generalization compared to the Simple CNN, ConvLSTM, and Vision Transformer models we experimented with. Its U-Net architecture with skip connections proved effective in capturing multi-scale spatial features crucial for climate emulation.
+*   **Model Architecture:** The final model is a U-Net-style Convolutional Neural Network.
+    *   **CoordConv2d:** The input layer incorporates CoordConv2d to explicitly provide spatial coordinates (latitude and longitude) to the network, enabling it to learn geographically aware patterns.
+    *   **Encoder:** The encoder path consists of several levels, each using ResidualSEBlocks followed by a 2x2 stride-2 convolution for downsampling. This progressively extracts hierarchical spatial features at reduced resolutions.
+    *   **ResidualSEBlock:** A custom block combining residual connections, Group Normalization, GELU activation, and a Squeeze-and-Excitation (SE) module for adaptive channel reweighting.
+    *   **Bottleneck:** The bottleneck uses stacked ResidualSEBlocks with dilated convolutions (rates 1, 2, and 4) to expand the receptive field without losing spatial resolution, followed by a Dropout2d layer (rate 0.2) for regularization.
+    *   **Decoder:** The decoder path mirrors the encoder, using transposed convolutions for upsampling and concatenating skip connections from corresponding encoder levels. ResidualSEBlocks are used to refine the combined features and recover fine-scale spatial detail. Bilinear interpolation is used in the final upsampling step to match the original width (72).
+    *   **Final Projection:** A 1x1 convolution maps the final feature map to the 2 output channels (surface air temperature and precipitation rate).
+*   **Training Details:**
+    *   **Optimizer:** Adam optimizer was used for training.
+    *   **Batch Size:** A batch size of 42 was used due to computational constraints.
+    *   **Training Duration:** Training duration varied by model complexity (Simple CNN: ~1 min/epoch, ConvLSTM: ~2.5 min/epoch, U-Net: ~3 min/epoch).
+*   **Final Parameters:** The final configuration for the best performing U-Net model included a kernel size of 5, a network depth of 4, and a dropout rate of 0.0422.
 
 ## 8. Results and Evaluation
 
@@ -59,36 +58,40 @@
 
 ## 9. Repository Structure
 
-    ```
-    climate-data-prediction-cse151b/
-    ├── .gitignore
-    ├── README.md
-    ├── requirements.txt
-    ├── pyproject.toml
-    ├── Makefile
-    ├── _climate_kaggle_metric.py
-    ├── _test_kaggle_metric.py
-    ├── main.py
-    ├── test.py
-    │
-    ├── configs/
-    │   └── all the configuration files
-    │
-    ├── notebooks/
-    │   ├── data-exploration-basic.ipynb (basic exploration)
-    │   └── extended_data_exploration.ipynb (detailed exploration)
-    │
-    └── src/
-        ├── __init__.py
-        ├── models.py (implementation of all the models)
-        └── utils.py
-    ```
+```
+U-Cast/
+├── .gitignore
+├── README.md
+├── requirements.txt
+├── pyproject.toml
+├── Makefile
+├── _climate_kaggle_metric.py
+├── _test_kaggle_metric.py
+├── main.py
+├── configs/
+│   ├── main_config.yaml
+│   ├── data/
+│   │   └── default.yaml
+│   ├── model/
+│   │   ├── convlstm.yaml
+│   │   ├── enhanced_climate_unet.yaml
+│   │   └── simple_cnn.yaml
+│   ├── trainer/
+│   │   └── default.yaml
+│   └── training/
+│       └── default.yaml
+├── notebooks/
+│   ├── data-exploration-basic.ipynb
+│   └── extended_data_exploration.ipynb
+├── src/
+│   ├── __init__.py
+│   ├── models.py
+│   └── utils.py
+└── submissions/
+```
 
-## 10. Future Work (Optional)
+## 10. Acknowledgements
 
-*   Suggest potential improvements or future directions for the project.
-
-
-## 1. Acknowledgements
-
-*   List the team members who contributed to the project.
+*   Guoxuan Xu
+*   Angela Hu
+*   Ciro Zhang
